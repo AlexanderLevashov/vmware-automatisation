@@ -22,24 +22,39 @@ func sendCurl(step string) {
 }
 
 // Откат к Snapshot
-func RevertToSnapshot(vmrunPath, vmxPath, snapshotName string) {
+func RevertToSnapshot(vmrunPath, vmxPath, snapshotName string) bool {
 	sendCurl("revert_snapshot")
 	cmd := exec.Command(vmrunPath, "revertToSnapshot", vmxPath, snapshotName)
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("Ошибка при откате к Snapshot: %v\n", err)
+		log.Printf("Ошибка при откате к Snapshot: %v\n", err)
+		StopVM(vmrunPath, vmxPath) // Останавливаем виртуальную машину при ошибке
+		return false
 	}
 	log.Println("Откат к Snapshot успешно выполнен")
+	return true
 }
 
 // Запуск виртуальной машины
-func StartVM(vmrunPath, vmxPath string) {
+func StartVM(vmrunPath, vmxPath string) bool {
 	sendCurl("start_vm")
 	cmd := exec.Command(vmrunPath, "start", vmxPath, "gui")
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("Ошибка при запуске виртуальной машины: %v\n", err)
+		log.Printf("Ошибка при запуске виртуальной машины: %v\n", err)
+		StopVM(vmrunPath, vmrunPath)
+		return false
 	}
 	log.Println("Виртуальная машина успешно запущена")
 	time.Sleep(10 * time.Second)
+	return true
+}
+
+// Остановка виртуальной машины
+func StopVM(vmrunPath, vmxPath string) {
+	cmd := exec.Command(vmrunPath, "stop", vmxPath, "soft")
+	if err := cmd.Run(); err != nil {
+		log.Printf("Ошибка при выключении виртуальной машины: %v\n", err)
+	}
+	log.Println("Виртуальная машина успешно выключена.")
 }
 
 // Функция для парсинга результатов sudo docker info
@@ -65,13 +80,13 @@ func parseDockerInfo(output string) map[string]int {
 func checkDockerContainers(client *ssh.Client) (bool, map[string]int) {
 	session, err := client.NewSession()
 	if err != nil {
-		log.Fatalf("Не удалось создать сессию для проверки Docker: %v\n", err)
+		log.Printf("Не удалось создать сессию для проверки Docker: %v\n", err)
 	}
 	defer session.Close()
 
 	output, err := session.CombinedOutput("sudo docker info")
 	if err != nil {
-		log.Fatalf("Ошибка при выполнении команды docker info: %v\n", err)
+		log.Printf("Ошибка при выполнении команды docker info: %v\n", err)
 	}
 
 	dockerInfo := parseDockerInfo(string(output))
@@ -87,15 +102,15 @@ func checkDockerContainers(client *ssh.Client) (bool, map[string]int) {
 }
 
 // Подключение по SSH и выполнение команд
-func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
+func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, error) {
 	sendCurl("ssh_connect")
 	key, err := os.ReadFile(sshKeyPath)
 	if err != nil {
-		log.Fatalf("Не удалось прочитать SSH ключ: %v\n", err)
+		log.Printf("Не удалось прочитать SSH ключ: %v\n", err)
 	}
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		log.Fatalf("Не удалось распарсить ключ SSH: %v\n", err)
+		log.Printf("Не удалось распарсить ключ SSH: %v\n", err)
 	}
 	config := &ssh.ClientConfig{
 		User:            sshUser,
@@ -105,7 +120,7 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 	sshAddress := fmt.Sprintf("%s:%d", sshHost, 22)
 	client, err := ssh.Dial("tcp", sshAddress, config)
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к %s: %v\n", sshAddress, err)
+		log.Printf("Не удалось подключиться к %s: %v\n", sshAddress, err)
 	}
 	defer client.Close()
 
@@ -114,7 +129,9 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 		log.Printf("Выполняется команда: %s\n", cmd)
 		session, err := client.NewSession()
 		if err != nil {
-			log.Fatalf("Не удалось создать сессию: %v\n", err)
+			log.Printf("Не удалось создать сессию: %v\n", err)
+			StopVM(sshHost, sshHost)
+			return false, err
 		}
 
 		// Вывод команды в реальном времени
@@ -123,7 +140,10 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 
 		err = session.Run(cmd) // Выполняем команду
 		if err != nil {
-			log.Fatalf("Команда завершилась с ошибкой: %v\n", err)
+			log.Printf("Команда завершилась с ошибкой: %v\n", err)
+			session.Close()
+			StopVM(sshHost, sshHost)
+			return false, err
 		}
 
 		log.Printf("Команда завершена: %s\n", cmd)
@@ -132,14 +152,14 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 
 	// Проверка статуса контейнеров и повторная попытка запуска install.sh при необходимости
 	attempt := 1
-	for attempt <= 1 { //2
+	for attempt <= 2 { //2 || 1
 		time.Sleep(10 * time.Second) // Задержка перед проверкой
 
 		// Проверка статуса контейнеров
 		allRunning, dockerInfo := checkDockerContainers(client)
 		if allRunning {
 			log.Println("Все контейнеры запущены успешно.")
-			return true
+			return true, err
 		}
 
 		// Если есть остановленные контейнеры, перезапуск install.sh
@@ -154,7 +174,10 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 			session.Stderr = os.Stderr
 			err = session.Run("cd /mnt/hgfs/Shared/analytic4 && sudo bash install.sh")
 			if err != nil {
-				log.Fatalf("Перезапуск install.sh завершился с ошибкой: %v\n", err)
+				log.Printf("Перезапуск install.sh завершился с ошибкой: %v\n", err)
+				session.Close()
+				StopVM(sshHost, sshHost)
+				return false, err
 			}
 
 			session.Close()
@@ -168,8 +191,8 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
 	allRunning, _ := checkDockerContainers(client)
 	if !allRunning {
 		//log.Println("Тест не пройден: один или несколько контейнеров находятся в статусе Stopped.")
-		return false
+		return false, err
 	}
 
-	return true
+	return true, nil
 }

@@ -47,7 +47,18 @@ func SendCurlViaSSH(sshUser, sshHost, sshKeyPath string) {
 	// Форматируем вывод
 	formattedOutput := formatCurlOutput(string(output))
 
-	//log.Printf("Ответ от curl: %s\n", string(output))
+	// Проверка на наличие HTML или ошибки 502
+	if strings.Contains(formattedOutput, "<html>") || strings.Contains(formattedOutput, "502 Bad Gateway") {
+		log.Println("Ошибка: сервер вернул HTML-код или 502 Bad Gateway вместо ожидаемого JSON.")
+		return
+	}
+
+	// Проверка на правильный JSON-ответ
+	if !strings.Contains(formattedOutput, `"userId":"admin"`) {
+		log.Println("Ошибка: неправильный формат JSON-ответа.")
+		return
+	}
+
 	log.Println(formattedOutput)
 }
 
@@ -60,8 +71,13 @@ func formatCurlOutput(output string) string {
 
 	// Проходим по строкам и сортируем их по типу (статистика/ответ)
 	for _, line := range lines {
-		if strings.HasPrefix(line, "{") || foundJSON {
+		trimmedLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmedLine, "{") || foundJSON {
 			// Если начинается JSON или мы уже начали его собирать
+			if !foundJSON && len(statsLines) > 0 {
+				// Добавляем пустую строку перед JSON-ответом
+				statsLines = append(statsLines, "")
+			}
 			responseLines = append(responseLines, line)
 			foundJSON = true
 		} else {
