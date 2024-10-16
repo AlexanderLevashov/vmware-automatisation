@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"vmware-automation/pkg/logging"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -60,6 +61,9 @@ func SendCurlViaSSH(sshUser, sshHost, sshKeyPath string) {
 	}
 
 	log.Println(formattedOutput)
+
+	// Логируем вывод в файл
+	logging.WriteLogToFile(formattedOutput)
 }
 
 // Функция для форматирования вывода curl

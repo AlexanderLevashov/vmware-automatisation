@@ -12,9 +12,6 @@ import (
 )
 
 func main() {
-	logFilePath := "test_results.xlsx"
-	cleanupLogFile(logFilePath)
-
 	// Переменные для настройки окружения
 	vmrunPath := `C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe`
 	sshKeyPath := `C:\Users\User\.ssh\id_rsa_no_pass`
@@ -35,7 +32,7 @@ func main() {
 
 	// Цикл по виртуальным машинам
 	for _, vmDetails := range vms {
-		processVM(vmrunPath, sshUser, sshKeyPath, snapshotName, vmDetails, commands, logFilePath)
+		processVM(vmrunPath, sshUser, sshKeyPath, snapshotName, vmDetails, commands)
 	}
 }
 
@@ -70,7 +67,7 @@ func getVMs() []struct {
 func processVM(vmrunPath, sshUser, sshKeyPath, snapshotName string, vmDetails struct {
 	vmxPath string
 	sshHost string
-}, commands []string, logFilePath string) {
+}, commands []string) {
 	// Откат к снапшоту
 	vm.RevertToSnapshot(vmrunPath, vmDetails.vmxPath, snapshotName)
 
@@ -84,44 +81,24 @@ func processVM(vmrunPath, sshUser, sshKeyPath, snapshotName string, vmDetails st
 	version := extractVersionFromPath(vmDetails.vmxPath)
 
 	// Подключение по SSH и выполнение команд
-	testPassed, err := vm.RunCommands(sshUser, vmDetails.sshHost, sshKeyPath, commands)
-
-	// Логирование результатов
-	logResults(version, err, logFilePath)
+	testPassed := vm.RunCommands(sshUser, vmDetails.sshHost, sshKeyPath, commands)
 
 	// Проверка тестов
 	if !testPassed {
-		log.Printf("Тест не пройден на версии сборки %s.\n", version)
+		formattedMessageTests := fmt.Sprintf("Тест не пройден на версии сборки %s.\n", version)
+		logging.WriteLogToFile(formattedMessageTests)
 		vm.StopVM(vmrunPath, vmDetails.vmxPath)
 		return
 	}
 
 	// Отправка curl-запросов через SSH
 	vm.SendCurlViaSSH(sshUser, vmDetails.sshHost, sshKeyPath)
-	log.Printf("Все команды выполнены успешно. Тест пройден на версии сборки %s.\n", version)
+	formattedMessageCurl := fmt.Sprintf("Все команды выполнены успешно. Тест пройден на версии сборки %s.\n", version)
+	logging.WriteLogToFile(formattedMessageCurl)
+	//log.Printf("Все команды выполнены успешно. Тест пройден на версии сборки %s.\n", version)
 
 	// Остановка виртуальной машины
 	vm.StopVM(vmrunPath, vmDetails.vmxPath)
-}
-
-// Логирование результатов тестов в xlsx файл
-func logResults(version string, err error, logFilePath string) {
-	outputInstall := "Installation Failed"
-	installDockerStatus := logging.FormatInstallStatus(outputInstall, nil) // Успешная установка
-	installStatus := logging.FormatInstallStatus(outputInstall, err)
-	fmt.Println(installStatus)
-
-	outputInstallDocker := "Stopped"
-	containerStatus := logging.CheckContainerStatus(outputInstallDocker, err) // Статус контейнеров
-	fmt.Println(containerStatus)
-
-	curlStatus := logging.FormatCurlStatus("JSON response") // Ответ от сервера
-
-	// Запись в xlsx файл
-	err = logging.LogResultsToXLSX(version, installDockerStatus, installStatus, containerStatus, curlStatus, 0, logFilePath)
-	if err != nil {
-		log.Printf("Ошибка записи логов: %v", err)
-	}
 }
 
 // Извлекает версию сборки из пути к VMX-файлу

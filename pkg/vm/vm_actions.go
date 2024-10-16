@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"vmware-automation/pkg/logging"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -90,8 +92,10 @@ func checkDockerContainers(client *ssh.Client) (bool, map[string]int) {
 	}
 
 	dockerInfo := parseDockerInfo(string(output))
-	log.Printf("Docker Containers Info:\nContainers: %d\nRunning: %d\nPaused: %d\nStopped: %d\n",
+	logMessage := fmt.Sprintf("Проверка статуса контейнеров:\nContainers: %d\nRunning: %d\nPaused: %d\nStopped: %d\n",
 		dockerInfo["Containers"], dockerInfo["Running"], dockerInfo["Paused"], dockerInfo["Stopped"])
+	log.Println(logMessage)
+	logging.WriteLogToFile(logMessage)
 
 	// Проверка: все контейнеры должны быть запущены
 	if dockerInfo["Running"] == 16 && dockerInfo["Stopped"] == 0 {
@@ -102,7 +106,10 @@ func checkDockerContainers(client *ssh.Client) (bool, map[string]int) {
 }
 
 // Подключение по SSH и выполнение команд
-func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, error) {
+func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) bool {
+	// Удаляем лог-файл при старте
+	logging.DeleteLogFile()
+
 	sendCurl("ssh_connect")
 	key, err := os.ReadFile(sshKeyPath)
 	if err != nil {
@@ -131,7 +138,7 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, 
 		if err != nil {
 			log.Printf("Не удалось создать сессию: %v\n", err)
 			StopVM(sshHost, sshHost)
-			return false, err
+			return false
 		}
 
 		// Вывод команды в реальном времени
@@ -143,7 +150,7 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, 
 			log.Printf("Команда завершилась с ошибкой: %v\n", err)
 			session.Close()
 			StopVM(sshHost, sshHost)
-			return false, err
+			return false
 		}
 
 		log.Printf("Команда завершена: %s\n", cmd)
@@ -159,15 +166,17 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, 
 		allRunning, dockerInfo := checkDockerContainers(client)
 		if allRunning {
 			log.Println("Все контейнеры запущены успешно.")
-			return true, err
+			logging.WriteLogToFile("Все контейнеры запущены успешно.")
+			return true
 		}
 
 		// Если есть остановленные контейнеры, перезапуск install.sh
 		if dockerInfo["Stopped"] > 0 {
 			log.Printf("Обнаружено %d остановленных контейнеров. Попытка %d перезапуска install.sh.\n", dockerInfo["Stopped"], attempt)
+			logging.WriteLogToFile(fmt.Sprintf("Обнаружено %d остановленных контейнеров. Попытка %d перезапуска install.sh.\n", dockerInfo["Stopped"], attempt))
 			session, err := client.NewSession()
 			if err != nil {
-				log.Fatalf("Не удалось создать сессию для перезапуска install.sh: %v\n", err)
+				log.Printf("Не удалось создать сессию для перезапуска install.sh: %v\n", err)
 			}
 
 			session.Stdout = os.Stdout
@@ -177,11 +186,12 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, 
 				log.Printf("Перезапуск install.sh завершился с ошибкой: %v\n", err)
 				session.Close()
 				StopVM(sshHost, sshHost)
-				return false, err
+				return false
 			}
 
 			session.Close()
 			log.Println("Перезапуск install.sh завершен.")
+			logging.WriteLogToFile("Перезапуск install.sh завершен.")
 		}
 
 		attempt++
@@ -190,9 +200,10 @@ func RunCommands(sshUser, sshHost, sshKeyPath string, commands []string) (bool, 
 	// Если после двух попыток контейнеры не запущены, возвращаем false
 	allRunning, _ := checkDockerContainers(client)
 	if !allRunning {
-		//log.Println("Тест не пройден: один или несколько контейнеров находятся в статусе Stopped.")
-		return false, err
+		log.Println("Один или несколько контейнеров находятся в статусе Stopped. Тест не пройден.")
+		logging.WriteLogToFile("Один или несколько контейнеров находятся в статусе Stopped. Тест не пройден.")
+		return false
 	}
 
-	return true, nil
+	return true
 }
